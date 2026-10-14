@@ -300,7 +300,8 @@ jobs:
 
           # Fix buffer scope: deferred hard-link copies run outside the TAR reader.
 for function_name in ("extractRootfs", "extractZstdTar", "extractNodeArchive"):
-    start = source.find(f"    private fun {function_name}(") if start < 0:
+    start = source.find(f"    private fun {function_name}(") 
+    if start < 0:
         raise SystemExit(f"Could not find function: {function_name}")
 
   end = source.find("\n    private fun ", start + 1)
