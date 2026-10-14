@@ -61,6 +61,33 @@ jobs:
             "$RUNNER_TEMP/mh-patched/Mobile-Harness-1.0.7/." \
             "$RUNNER_TEMP/mh-build/"
 
+
+          # Fix the malformed string resource before building.
+          python3 - "$RUNNER_TEMP/mh-build/app/src/main/res/values/strings.xml" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          if not path.is_file():
+              raise SystemExit(f"ERROR: strings.xml not found: {path}")
+
+          source = path.read_text(encoding="utf-8")
+          pattern = r'<string\s+name="provider_local_model_help"[^>]*>.*?</string>'
+          replacement = (
+              '<string name="provider_local_model_help">'
+              'Enter the model URL and model name, then test the connection.'
+              '</string>'
+          )
+          result, count = re.subn(pattern, replacement, source, count=1, flags=re.DOTALL)
+
+          if count != 1:
+              raise SystemExit(f"Expected one matching string resource; found {count}")
+
+          path.write_text(result, encoding="utf-8")
+          print("Fixed provider_local_model_help")
+          PY
+
           chmod +x "$RUNNER_TEMP/mh-build/gradlew"
 
           test -f \
