@@ -112,7 +112,195 @@ jobs:
           print("Fixed ConcurrentHashMap key lookup")
           PY
 
-          
+                    # Optimize runtime extraction and first-run maintenance.
+          python3 - "$RUNNER_TEMP/mh-build/app/src/main/java/com/jarves/mh/runtime/RuntimeInstaller.kt" <<'PY'
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          source = path.read_text(encoding="utf-8")
+
+          def replace_exact(source, old, new, expected, label):
+              count = source.count(old)
+              if count != expected:
+                  raise SystemExit(
+                      f"{label}: expected {expected} matches, found {count}. "
+                      "No file was written; inspect the source version."
+                  )
+              return source.replace(old, new)
+
+          # Keep package repair and repository refresh; skip the full upgrade.
+          apt_old = (
+              '            "apt-get -o DPkg::Lock::Timeout=120 -f install -y && " +\n'
+              '            "apt-get -o DPkg::Lock::Timeout=120 update && " +\n'
+              '            "apt-get -o DPkg::Lock::Timeout=120 upgrade -y"'
+          )
+          apt_new = (
+              '            "apt-get -o DPkg::Lock::Timeout=120 -f install -y && " +\n'
+              '            "apt-get -o DPkg::Lock::Timeout=120 update"'
+          )
+          apt_minimal = '            "apt-get -o DPkg::Lock::Timeout=120 -f install -y"'
+
+          if source.count(apt_old) == 1:
+              source = source.replace(apt_old, apt_new, 1)
+          elif source.count(apt_new) == 1:
+              print("Full Ubuntu upgrade already skipped.")
+          elif source.count(apt_minimal) == 1:
+              source = source.replace(apt_minimal, apt_new, 1)
+          else:
+              raise SystemExit("Could not identify the Ubuntu maintenance command.")
+
+          display_old = (
+              'displayCommand = "dpkg --configure -a && apt-get -f install -y '
+              '&& apt-get update && apt-get upgrade -y",'
+          )
+          display_new = (
+              'displayCommand = "dpkg --configure -a && apt-get -f install -y '
+              '&& apt-get update",'
+          )
+          display_minimal = (
+              'displayCommand = "dpkg --configure -a && apt-get -f install -y",'
+          )
+
+          if source.count(display_old) == 1:
+              source = source.replace(display_old, display_new, 1)
+          elif source.count(display_new) == 1:
+              pass
+          elif source.count(display_minimal) == 1:
+              source = source.replace(display_minimal, display_new, 1)
+          else:
+              raise SystemExit("Could not identify the maintenance display label.")
+
+          # Allocate one reusable buffer inside each archive reader.
+          source = replace_exact(
+              source,
+              ".use { tar ->\n",
+              ".use { tar ->\n"
+              "            val copyBuffer = ByteArray(128 * 1024)\n"
+              "            val canonicalRoot = destination.canonicalFile.toPath()\n",
+              3,
+              "TAR readers",
+          )
+          source = replace_exact(
+              source,
+              ".use { zip ->\n",
+              ".use { zip ->\n"
+              "            val copyBuffer = ByteArray(128 * 1024)\n"
+              "            val canonicalRoot = destination.canonicalFile.toPath()\n",
+              1,
+              "ZIP reader",
+          )
+
+          source = replace_exact(
+              source,
+              "tar.copyTo(output)",
+              "copyArchiveEntryBuffer(tar, output, copyBuffer)",
+              3,
+              "TAR file copies",
+          )
+          source = replace_exact(
+              source,
+              "zip.copyTo(output)",
+              "copyArchiveEntryBuffer(zip, output, copyBuffer)",
+              1,
+              "ZIP file copies",
+          )
+          source = replace_exact(
+              source,
+              "FileOutputStream(target).use { input.copyTo(it) }",
+              "FileOutputStream(target).use { output -> "
+              "copyArchiveEntryBuffer(input, output, copyBuffer) }",
+              6,
+              "Archive hard-link copies",
+          )
+
+          # Cache the checksum reader's buffer size too.
+          source = replace_exact(
+              source,
+              "val buffer = ByteArray(DEFAULT_BUFFER_SIZE)",
+              "val buffer = ByteArray(128 * 1024)",
+              1,
+              "Checksum buffer",
+          )
+
+          # Preserve the archive path safety check but reuse the canonical root.
+          source = replace_exact(
+              source,
+              "safeChild(destination, name)",
+              "safeChild(destination, name, canonicalRoot)",
+              1,
+              "ZIP path checks",
+          )
+          source = replace_exact(
+              source,
+              "safeChild(destination, cleanName)",
+              "safeChild(destination, cleanName, canonicalRoot)",
+              2,
+              "TAR path checks",
+          )
+          source = replace_exact(
+              source,
+              'safeChild(destination, entry.linkName.removePrefix("./"))',
+              'safeChild(destination, entry.linkName.removePrefix("./"), canonicalRoot)',
+              2,
+              "TAR link path checks",
+          )
+          source = replace_exact(
+              source,
+              "safeChild(destination, relative)",
+              "safeChild(destination, relative, canonicalRoot)",
+              1,
+              "Node.js path checks",
+          )
+          source = replace_exact(
+              source,
+              "safeChild(destination, relativeLink)",
+              "safeChild(destination, relativeLink, canonicalRoot)",
+              1,
+              "Node.js link path checks",
+          )
+
+          source = replace_exact(
+              source,
+              "    private fun safeChild(root: File, relative: String): File {",
+              "    private fun safeChild(root: File, relative: String, "
+              "rootPath: java.nio.file.Path): File {",
+              1,
+              "Path safety function",
+          )
+          source = replace_exact(
+              source,
+              "        val rootPath = root.canonicalFile.toPath()\n",
+              "",
+              1,
+              "Duplicate canonical-root calculation",
+          )
+
+          helper = """    private fun copyArchiveEntryBuffer(
+              input: java.io.InputStream,
+              output: java.io.OutputStream,
+              buffer: ByteArray,
+          ) {
+              while (true) {
+                  val count = input.read(buffer)
+                  if (count < 0) break
+                  output.write(buffer, 0, count)
+              }
+          }
+
+          """
+          marker = (
+              "    private fun safeChild(root: File, relative: String, "
+              "rootPath: java.nio.file.Path): File {"
+          )
+          source = replace_exact(
+              source, marker, helper + marker, 1, "Archive copy helper"
+          )
+
+          # Write only after every expected source edit has succeeded.
+          path.write_text(source, encoding="utf-8")
+          print("Runtime I/O optimization applied successfully.")
+          PY
 
           chmod +x "$RUNNER_TEMP/mh-build/gradlew"
 
