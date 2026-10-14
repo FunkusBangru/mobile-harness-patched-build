@@ -297,36 +297,36 @@ jobs:
               source, marker, helper + marker, 1, "Archive copy helper"
           )
 
-# Fix buffer scope: deferred hard-link copies run outside the TAR reader.
-         for function_name in ("extractRootfs", "extractZstdTar", "extractNodeArchive"):
-         start = source.find(f"    private fun {function_name}(")
-         if start < 0:
-         raise SystemExit(f"Could not find function: {function_name}")
-         
-         end = source.find("\n    private fun ", start + 1)
-         if end < 0:
-         end = len(source)
 
-         block = source[start:end]
+          # Fix buffer scope: deferred hard-link copies run outside the TAR reader.
+for function_name in ("extractRootfs", "extractZstdTar", "extractNodeArchive"):
+    start = source.find(f"    private fun {function_name}(")
+    if start < 0:
+        raise SystemExit(f"Could not find function: {function_name}")
 
-         inner = "            val copyBuffer = ByteArray(128 * 1024)\n"
-         outer = "        val copyBuffer = ByteArray(128 * 1024)\n"
-         anchor = "        val deferredLinks = mutableListOf<Pair<File, File>>()\n"
+    end = source.find("\n    private fun ", start + 1)
+    if end < 0:
+        end = len(source)
 
-         if block.count(inner) == 1 and block.count(anchor) == 1:
-          block = block.replace(anchor, outer + anchor, 1)
-          block = block.replace(inner, "", 1)
-         elif block.count(outer) == 1 and inner not in block:
-          pass
-         else:
-           raise SystemExit(
-              f"Could not safely fix buffer scope in {function_name}"
-         )
+    block = source[start:end]
 
-         source = source[:start] + block + source[end:]
+    inner = "            val copyBuffer = ByteArray(128 * 1024)\n"
+    outer = "        val copyBuffer = ByteArray(128 * 1024)\n"
+    anchor = "        val deferredLinks = mutableListOf<Pair<File, File>>()\n"
 
-         print("Fixed archive copy-buffer scope.")
-          # Write only after every expected source edit has succeeded.
+    if block.count(inner) == 1 and block.count(anchor) == 1:
+        block = block.replace(anchor, outer + anchor, 1)
+        block = block.replace(inner, "", 1)
+    elif block.count(outer) == 1 and inner not in block:
+        pass
+    else:
+        raise SystemExit(
+            f"Could not safely fix buffer scope in {function_name}"
+        )
+
+    source = source[:start] + block + source[end:]
+
+print("Fixed archive copy-buffer scope.")
           path.write_text(source, encoding="utf-8")
           print("Runtime I/O optimization applied successfully.")
           PY
